@@ -33,6 +33,7 @@ public class SampleGattAttributes {
         // Sample Characteristics.
         attributes.put(HEART_RATE_MEASUREMENT, "Heart Rate Measurement");
         attributes.put("00002a29-0000-1000-8000-00805f9b34fb", "Manufacturer Name String");
+        attributes.put("0000a012-0000-1000-8000-00805f9b34fb", "Q-Tube Service");
     }
 
     public static String lookup(String uuid, String defaultName) {

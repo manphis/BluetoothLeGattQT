@@ -33,4 +33,10 @@
     <string name="menu_disconnect">Disconnect</string>
     <string name="menu_scan">Scan</string>
     <string name="menu_stop">Stop</string>
+
+    <string name="send">Send</string>
+    <string name="stop">Stop</string>
+    <string name="project_name">Q-Tube</string>
+
+    <string name="send_state">Sending Data...</string>
 </resources>

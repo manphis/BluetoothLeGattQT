@@ -26,18 +26,26 @@ import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.ServiceConnection;
 import android.os.Bundle;
+import android.os.Handler;
 import android.os.IBinder;
 import android.util.Log;
 import android.view.Menu;
 import android.view.MenuItem;
 import android.view.View;
+import android.widget.Button;
 import android.widget.ExpandableListView;
 import android.widget.SimpleExpandableListAdapter;
 import android.widget.TextView;
 
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
+import java.nio.charset.Charset;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
+import java.util.zip.CRC32;
+import java.util.zip.Checksum;
 
 /**
  * For a given BLE device, this Activity provides the user interface to connect, display data,
@@ -50,17 +58,26 @@ public class DeviceControlActivity extends Activity {
 
     public static final String EXTRAS_DEVICE_NAME = "DEVICE_NAME";
     public static final String EXTRAS_DEVICE_ADDRESS = "DEVICE_ADDRESS";
+    private static final String SEND_CHARACTERISTIC = "a017";
+    private static final String SEND_DATA = "192.168.0.0";
+    private static final int SEND_INTERVAL = 50;   //ms
 
     private TextView mConnectionState;
     private TextView mDataField;
     private String mDeviceName;
     private String mDeviceAddress;
     private ExpandableListView mGattServicesList;
-    private BluetoothLeService mBluetoothLeService;
+    private BluetoothLeService mBluetoothLeService = null;
     private ArrayList<ArrayList<BluetoothGattCharacteristic>> mGattCharacteristics =
             new ArrayList<ArrayList<BluetoothGattCharacteristic>>();
     private boolean mConnected = false;
     private BluetoothGattCharacteristic mNotifyCharacteristic;
+    private Button sendBtn;
+    private TextView sendState;
+    private BluetoothGattCharacteristic mGattCharacteristic;
+    private boolean sendingData = false;
+    private Handler mHandler = new Handler();
+    private Checksum mChecksum = new CRC32();
 
     private final String LIST_NAME = "NAME";
     private final String LIST_UUID = "UUID";
@@ -147,6 +164,36 @@ public class DeviceControlActivity extends Activity {
                 }
     };
 
+    private View.OnClickListener sendBtnListenrer = new View.OnClickListener() {
+        @Override
+        public void onClick(View v) {
+            if (sendingData) {
+                sendingData = false;
+                sendBtn.setText(getText(R.string.send));
+                sendState.setText("");
+                mHandler.removeCallbacks(SendDataRunnable);
+            } else {
+                sendingData = true;
+                sendBtn.setText(getText(R.string.stop));
+                sendState.setText(getText(R.string.send_state));
+                mHandler.post(SendDataRunnable);
+            }
+        }
+    };
+
+    private Runnable SendDataRunnable = new Runnable() {
+        @Override
+        public void run() {
+            if (null != mBluetoothLeService) {
+                Log.i(TAG, "writeCharacteristic");
+                mBluetoothLeService.writeCharacteristic(mGattCharacteristic);
+
+                if (sendingData)
+                    mHandler.postDelayed(this, SEND_INTERVAL);
+            }
+        }
+    };
+
     private void clearUI() {
         mGattServicesList.setAdapter((SimpleExpandableListAdapter) null);
         mDataField.setText(R.string.no_data);
@@ -167,6 +214,9 @@ public class DeviceControlActivity extends Activity {
         mGattServicesList.setOnChildClickListener(servicesListClickListner);
         mConnectionState = (TextView) findViewById(R.id.connection_state);
         mDataField = (TextView) findViewById(R.id.data_value);
+        sendBtn = (Button) findViewById(R.id.sendBtn);
+        sendBtn.setOnClickListener(sendBtnListenrer);
+        sendState = (TextView) findViewById(R.id.send_state);
 
         getActionBar().setTitle(mDeviceName);
         getActionBar().setDisplayHomeAsUpEnabled(true);
@@ -217,6 +267,12 @@ public class DeviceControlActivity extends Activity {
                 mBluetoothLeService.connect(mDeviceAddress);
                 return true;
             case R.id.menu_disconnect:
+                sendingData = false;
+                sendBtn.setText(getText(R.string.send));
+                sendBtn.setEnabled(false);
+                sendState.setText("");
+                mHandler.removeCallbacks(SendDataRunnable);
+
                 mBluetoothLeService.disconnect();
                 return true;
             case android.R.id.home:
@@ -258,8 +314,11 @@ public class DeviceControlActivity extends Activity {
         for (BluetoothGattService gattService : gattServices) {
             HashMap<String, String> currentServiceData = new HashMap<String, String>();
             uuid = gattService.getUuid().toString();
-            currentServiceData.put(
-                    LIST_NAME, SampleGattAttributes.lookup(uuid, unknownServiceString));
+            String serviceName = SampleGattAttributes.lookup(uuid, unknownServiceString);
+            if (serviceName.contains(getResources().getString(R.string.project_name)))
+                sendBtn.setEnabled(true);
+
+            currentServiceData.put(LIST_NAME, serviceName);
             currentServiceData.put(LIST_UUID, uuid);
             gattServiceData.add(currentServiceData);
 
@@ -272,6 +331,11 @@ public class DeviceControlActivity extends Activity {
 
             // Loops through available Characteristics.
             for (BluetoothGattCharacteristic gattCharacteristic : gattCharacteristics) {
+                if (gattCharacteristic.getUuid().toString().contains(SEND_CHARACTERISTIC)) {
+                    mGattCharacteristic = gattCharacteristic;
+                    mGattCharacteristic.setValue(formatInfo(SEND_DATA));
+                }
+
                 charas.add(gattCharacteristic);
                 HashMap<String, String> currentCharaData = new HashMap<String, String>();
                 uuid = gattCharacteristic.getUuid().toString();
@@ -305,5 +369,26 @@ public class DeviceControlActivity extends Activity {
         intentFilter.addAction(BluetoothLeService.ACTION_GATT_SERVICES_DISCOVERED);
         intentFilter.addAction(BluetoothLeService.ACTION_DATA_AVAILABLE);
         return intentFilter;
+    }
+
+    private byte[] formatInfo(String info) {
+        int dataLen = info.length();
+        ByteBuffer pBuffer = ByteBuffer.allocate(dataLen).order(ByteOrder.LITTLE_ENDIAN);
+        ByteBuffer fBuffer = ByteBuffer.allocate(dataLen + 4).order(ByteOrder.LITTLE_ENDIAN);
+
+        Arrays.fill(pBuffer.array(), (byte) 0);
+        pBuffer.clear();
+        pBuffer.put(info.getBytes(Charset.forName("UTF-8")));
+
+        mChecksum.reset();
+        mChecksum.update(pBuffer.array(), 0, pBuffer.array().length);
+        int crc = (int) mChecksum.getValue();
+
+        Arrays.fill(fBuffer.array(), (byte) 0);
+        fBuffer.clear();
+        fBuffer.putInt(crc);
+        fBuffer.put(pBuffer.array());
+
+        return fBuffer.array();
     }
 }
